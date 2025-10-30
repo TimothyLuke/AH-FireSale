@@ -5,5 +5,7 @@
 ## Author: TimothyLuke
 ## Version: 0.1
 ## Dependencies: Auctionator
+## LoadSavedVariablesFirst: true
+## SavedVariables: FireSale_Data
 
 Init.lua

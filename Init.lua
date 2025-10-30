@@ -1,5 +1,7 @@
 local addon, options = ...
 
+local FireSale_Data = FireSale_Data or {}
+
 local Auctionator = Auctionator
 
 local source = {
@@ -22,7 +24,6 @@ local source = {
 					if ahprice and vendorprice then
 						-- print(itemid, item:GetItemName(), ahprice, vendorprice)
 						if ahprice < vendorprice then
-
 							-- print("Added " .. item:GetItemName() .. " to Shopping List")
 							local list = Auctionator.Shopping.ListManager:GetIndexForName("FireSale")
 							if not list then
@@ -30,7 +31,7 @@ local source = {
 							else
 								local items = Auctionator.API.v1.GetShoppingListItems(addon, "FireSale")
 								local found = false
-								for _,v in ipairs(items) do
+								for _, v in ipairs(items) do
 									if v == itemname then
 										found = true
 									end
@@ -45,12 +46,15 @@ local source = {
 					end
 				end
 			)
-			
 		end
 		print("Ending FireSale, " .. tostring(count) .. " items added for purchase.")
 	end
 }
 Auctionator.EventBus:RegisterSource(source, addon)
 
-Auctionator.EventBus:Register(source, {Auctionator.FullScan.Events.ScanComplete})
-Auctionator.EventBus:Register(source, {Auctionator.IncrementalScan.Events.ScanComplete})
+if Auctionator and Auctionator.FullScan and Auctionator.FullScan.Events then
+	Auctionator.EventBus:Register(source, {Auctionator.FullScan.Events.ScanComplete})
+end
+if Auctionator and Auctionator.IncrementalScan and Auctionator.IncrementalScan.Events then
+	Auctionator.EventBus:Register(source, {Auctionator.IncrementalScan.Events.ScanComplete})
+end
