@@ -1,4 +1,4 @@
-## Interface: 11507, 110105
+## Interface: 11508, 20505, 120000, 120001
 
 ## Title: AH Fire Sale
 ## Notes: This plugin to Auctionator creates a Shopping List called FireSale that has items listed on the Auction House for less than their vendor price.  To populate this just do a Full Scan in Auctionator.
