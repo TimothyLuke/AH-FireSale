@@ -1,0 +1,1 @@
+The Auction House Firesale is an extension to Auctionator that lists items that are available on the Auction House for less than their vendor sale price.  IE you buy these items and sell them to an NPC for a profit.  Sure, it's nickels here and there, but gold is gold.
