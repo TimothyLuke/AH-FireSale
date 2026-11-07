@@ -28,8 +28,10 @@ local function SearchStringToName(searchString)
 	return term and term.searchString
 end
 
-local function NameToSearchString(name)
-	return Auctionator.API.v1.ConvertToSearchString(addon, {searchString = name, isExact = true})
+-- Random-suffix gear ("Scalping Tomahawk of the Bear") shares one itemID whose base name
+-- never appears on the AH, so those items need a non-exact search to be found.
+local function NameToSearchString(name, isExact)
+	return Auctionator.API.v1.ConvertToSearchString(addon, {searchString = name, isExact = isExact ~= false})
 end
 
 local function ListExists()
@@ -63,33 +65,45 @@ end
 
 -- Auctionator hands over a different payload depending on the client and scan type.
 -- Each entry is one auction (full scans) or one browse result (incremental scan), so
--- the same item shows up many times. Returns itemID and per-unit buyout, or nil.
+-- the same item shows up many times. Returns itemID, per-unit buyout (or nil), and
+-- either the auction's display name (full scans) or whether it carries a suffix.
+local function ReadInfo(info)
+	local price
+	if info[3] and info[3] > 0 and info[10] and info[10] > 0 then
+		price = info[10] / info[3]
+	end
+	return info[17], price, info[1]
+end
+
 local function ReadEntry(entry)
 	if entry.replicateInfo then
 		-- Retail full scan (C_AuctionHouse.GetReplicateItemInfo)
-		local info = entry.replicateInfo
-		if info[3] and info[3] > 0 and info[10] and info[10] > 0 then
-			return info[17], info[10] / info[3]
-		end
-		return info[17]
+		return ReadInfo(entry.replicateInfo)
 	elseif entry.auctionInfo then
 		-- Classic full scan (GetAuctionItemInfo)
-		local info = entry.auctionInfo
-		if info[3] and info[3] > 0 and info[10] and info[10] > 0 then
-			return info[17], info[10] / info[3]
-		end
-		return info[17]
+		return ReadInfo(entry.auctionInfo)
 	elseif entry.itemKey then
 		-- Retail incremental scan (browse results)
-		return entry.itemKey.itemID, entry.minPrice
+		local suffix = entry.itemKey.itemSuffix
+		return entry.itemKey.itemID, entry.minPrice, suffix and suffix > 0
 	end
 end
 
--- Collapse the raw scan into one lowest unit price per itemID.
+-- Collapse the raw scan into one lowest unit price per itemID. Also returns, per itemID,
+-- the auction names seen (or true when the scan flagged a suffix directly).
 local function MergeScan(data)
 	local merged = {}
+	local names = {}
 	for _, entry in ipairs(data) do
-		local itemID, price = ReadEntry(entry)
+		local itemID, price, name = ReadEntry(entry)
+		if itemID and name then
+			if name == true then
+				names[itemID] = true
+			elseif names[itemID] ~= true then
+				names[itemID] = names[itemID] or {}
+				names[itemID][name] = true
+			end
+		end
 		if itemID then
 			local current = merged[itemID]
 			if price and price > 0 and (current == nil or current == false or price < current) then
@@ -100,7 +114,22 @@ local function MergeScan(data)
 			end
 		end
 	end
-	return merged
+	return merged, names
+end
+
+-- True when auctions for this itemID were listed under a name other than its base name.
+local function HasSuffix(seenNames, baseName)
+	if seenNames == true then
+		return true
+	end
+	if seenNames then
+		for name in pairs(seenNames) do
+			if name ~= "" and name ~= baseName then
+				return true
+			end
+		end
+	end
+	return false
 end
 
 local function FinishScan(state)
@@ -115,17 +144,23 @@ local function FinishScan(state)
 		for _, searchString in ipairs(Auctionator.API.v1.GetShoppingListItems(addon, LIST_NAME)) do
 			local name = NormaliseName(SearchStringToName(searchString))
 			if name then
-				existing[name] = true
+				existing[name] = searchString
 			end
 		end
 	end
 
 	local toAdd = {}
-	for _, name in ipairs(state.bargains) do
-		local key = NormaliseName(name)
-		if not existing[key] then
-			existing[key] = true
-			table.insert(toAdd, NameToSearchString(name))
+	for _, bargain in ipairs(state.bargains) do
+		local key = NormaliseName(bargain.name)
+		local searchString = NameToSearchString(bargain.name, bargain.isExact)
+		local current = existing[key]
+		if current ~= searchString and not (current and bargain.isExact) then
+			if current then
+				-- An older exact entry for a suffixed item never matches; swap it for a fuzzy one.
+				Auctionator.API.v1.DeleteShoppingListItem(addon, LIST_NAME, current)
+			end
+			existing[key] = searchString
+			table.insert(toAdd, searchString)
 		end
 	end
 
@@ -150,15 +185,18 @@ local function FinishScan(state)
 	Print(msg .. ".")
 end
 
-local function CheckItem(state, itemID, scanPrice)
+local function CheckItem(state, itemID, scanPrice, auctionNames)
 	local itemname, _, _, _, _, _, _, _, _, _, vendorprice = GetItemInfo(itemID)
 	local ahprice = scanPrice or Auctionator.API.v1.GetAuctionPriceByItemID(addon, itemID)
 	if itemname and ahprice and vendorprice and vendorprice > 0 and ahprice < vendorprice then
+		local isExact = not HasSuffix(auctionNames, itemname)
 		if IsIgnored(itemname) then
 			state.ignored = state.ignored + 1
 		elseif not state.seenNames[itemname] then
-			state.seenNames[itemname] = true
-			table.insert(state.bargains, itemname)
+			state.seenNames[itemname] = {name = itemname, isExact = isExact}
+			table.insert(state.bargains, state.seenNames[itemname])
+		elseif not isExact then
+			state.seenNames[itemname].isExact = false
 		end
 	end
 end
@@ -169,7 +207,7 @@ local function ProcessScan(data)
 	end
 	scanInProgress = true
 
-	local merged = MergeScan(data)
+	local merged, auctionNames = MergeScan(data)
 	local state = {pending = 0, ignored = 0, bargains = {}, seenNames = {}, finished = false}
 
 	for itemID in pairs(merged) do
@@ -191,7 +229,7 @@ local function ProcessScan(data)
 				if state.finished then
 					return
 				end
-				CheckItem(state, itemID, price or nil)
+				CheckItem(state, itemID, price or nil, auctionNames[itemID])
 				state.pending = state.pending - 1
 				if state.pending == 0 then
 					FinishScan(state)
